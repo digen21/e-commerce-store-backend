@@ -1,3 +1,4 @@
+export * from "./admin.validators";
 export * from "./auth.validators";
 export { default as envValidatorSchema } from "./env.validators";
 export * from "./order.validators";

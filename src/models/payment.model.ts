@@ -68,6 +68,7 @@ const PaymentSchema = new mongoose.Schema<IPayment>(
 PaymentSchema.index({ orderId: 1 });
 PaymentSchema.index({ userId: 1, createdAt: -1 });
 PaymentSchema.index({ paymentIntentId: 1 });
+PaymentSchema.index({ user: 1, status: 1 }); // For pending order checks
 
 PaymentSchema.plugin(mongoosePaginate);
 

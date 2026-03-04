@@ -30,6 +30,7 @@ export const updateOrderStatusValidatorSchema = Joi.object({
       .valid(...Object.values(OrderStatus))
       .required(),
     paymentStatus: Joi.string().valid(...Object.values(PaymentStatus)),
+    estimatedDeliveryDate: Joi.date().iso(),
   }),
 });
 
@@ -73,5 +74,3 @@ export const getAllOrdersValidatorSchema = Joi.object({
     sortOrder: Joi.number().valid(1, -1).default(-1),
   }),
 });
-
-

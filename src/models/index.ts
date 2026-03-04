@@ -1,3 +1,4 @@
+export { default as AdminProfile } from "./admin.model";
 export { default as Analytics } from "./analytics.model";
 export { default as Order } from "./order.model";
 export { default as Payment } from "./payment.model";

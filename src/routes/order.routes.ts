@@ -1,7 +1,13 @@
 import express from "express";
 
 import { orderController } from "@controllers";
-import { isAdminRole, isAuth, validate, rateLimiter } from "@middlewares";
+import {
+  idempotencyMiddleware,
+  isAdminRole,
+  isAuth,
+  rateLimiter,
+  validate,
+} from "@middlewares";
 import {
   cancelOrderValidatorSchema,
   createOrderValidatorSchema,
@@ -18,6 +24,7 @@ orderRouter.post(
   "/",
   isAuth,
   rateLimiter,
+  idempotencyMiddleware,
   validate(createOrderValidatorSchema),
   orderController.createOrder,
 );

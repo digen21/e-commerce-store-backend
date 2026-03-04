@@ -10,7 +10,7 @@ class MailService {
         to: mailVerificationInput.email,
         subject: "Verification Email",
         // basically the FE URL
-        html: `<a href="${"http://localhost:3000"}/api/auth/verify-mail?token=${mailVerificationInput.verificationToken}">Click Here To Verify Mail</a>`,
+        html: `<a href="${env.FRONTEND_URL}/verify-mail?token=${mailVerificationInput.verificationToken}">Click Here To Verify Mail</a>`,
       };
 
       const info = await transporter.sendMail(options);
@@ -30,7 +30,7 @@ class MailService {
         from: env.MAIL_USER,
         to: mailResetPasswordInput.email,
         subject: "Reset Password",
-        html: `<a href="${"http://localhost:3000"}/reset-password?token=${mailResetPasswordInput.resetToken}">Click Here To Reset Password</a>`,
+        html: `<a href="${env.FRONTEND_URL}/reset-password?token=${mailResetPasswordInput.resetToken}">Click Here To Reset Password</a>`,
       };
 
       const info = await transporter.sendMail(options);

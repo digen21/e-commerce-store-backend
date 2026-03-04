@@ -4,6 +4,7 @@ import type { PaymentStatus } from "./payment.types";
 
 export enum OrderStatus {
   CREATED = "CREATED",
+  PENDING = "PENDING",
   ACCEPTED = "ACCEPTED",
   CONFIRMED = "CONFIRMED",
   CANCELLED = "CANCELLED",
@@ -38,6 +39,11 @@ export interface IOrder {
   address?: Types.ObjectId;
   paymentId?: Types.ObjectId;
   items: IOrderItem[];
+  subtotal: number;
+  taxRate: number;
+  taxAmount: number;
+  cgstAmount?: number;
+  sgstAmount?: number;
   totalAmount: number;
 
   paymentStatus: PaymentStatus;
@@ -46,10 +52,9 @@ export interface IOrder {
   paymentStatusTimeline?: IPaymentStatusTimeline;
   orderStatusTimeLine?: IOrderStatusTimeline;
 
+  estimatedDeliveryDate?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
 
 export type IOrderDoc = HydratedDocument<IOrder>;
-
-

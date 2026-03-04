@@ -1,5 +1,6 @@
 import express, { Express } from "express";
 
+import adminRouter from "./admin.routes";
 import authRouter from "./auth.routes";
 import orderRouter from "./order.routes";
 import paymentRouter from "./payment.routes";
@@ -14,6 +15,7 @@ const useRoutes = (app: Express) => {
   router.use("/users", userDetailsRouter);
   router.use("/orders", orderRouter);
   router.use("/payments", paymentRouter);
+  router.use("/admin", adminRouter);
 
   app.use("/api", router);
 };

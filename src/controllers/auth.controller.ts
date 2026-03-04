@@ -147,7 +147,7 @@ class AuthController {
         {
           _id: tokenDetails.user,
         },
-        { isVerified: true },
+        { isVerified: true, verifiedAt: Date.now() },
         { session },
       );
 

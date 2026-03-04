@@ -4,6 +4,8 @@ export {
   isUserRole,
 } from "./allowedRoles";
 export { default as errorHandler } from "./errorHandler";
+export { idempotencyMiddleware } from "./idempotency";
+export { default as initCors } from "./initCors";
 export { default as initPassport } from "./initPassport";
 export { default as isAuth } from "./isAuth";
 export * from "./rateLimit";

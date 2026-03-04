@@ -14,6 +14,7 @@ const UserSchema = new mongoose.Schema<IUser>(
       default: UserRoles.USER,
     },
     isVerified: { type: Boolean, default: false },
+    verifiedAt: { type: Date },
   },
   { timestamps: true },
 );

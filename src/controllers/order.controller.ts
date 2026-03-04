@@ -4,6 +4,7 @@ import mongoose, { QueryFilter, Types } from "mongoose";
 
 import { Product } from "@models";
 import {
+  adminProfileService,
   analyticsLogger,
   orderService,
   paymentService,
@@ -18,7 +19,8 @@ import {
   IOrderStatusTimeline,
   IPaymentItem,
   IPaymentStatusTimeline,
-  IUser,  OrderStatus,
+  IUser,
+  OrderStatus,
   PaymentMethod,
   PaymentStatus,
 } from "@types";
@@ -59,10 +61,39 @@ class OrderController {
       try {
         // Validate items
         if (!items || items.length === 0) {
+          await session.abortTransaction();
+          session.endSession();
           return next(
             new ServerError({
               message: "Order items are required",
               status: httpStatus.BAD_REQUEST,
+            }),
+          );
+        }
+
+        // Check for existing pending orders to prevent duplicate payments
+        const existingPendingOrder = await orderService.findOne(
+          {
+            user: userId,
+            paymentStatus: PaymentStatus.PENDING,
+            orderStatus: { $in: [OrderStatus.CREATED, OrderStatus.PENDING] },
+          },
+          {},
+          { session },
+        );
+
+        if (existingPendingOrder) {
+          await session.abortTransaction();
+          session.endSession();
+          return next(
+            new ServerError({
+              message:
+                "You already have a pending order. Please complete or cancel it before creating a new one.",
+              status: httpStatus.BAD_REQUEST,
+              meta: {
+                existingOrderId: existingPendingOrder._id,
+                paymentIntentId: existingPendingOrder.paymentId,
+              },
             }),
           );
         }
@@ -124,7 +155,7 @@ class OrderController {
 
         // Validate stock and build order items
         const orderItems: IOrderItem[] = [];
-        let totalAmount = 0;
+        let subtotal = 0;
         const outOfStockProducts: string[] = [];
 
         for (const item of items) {
@@ -140,7 +171,7 @@ class OrderController {
             quantity: item.quantity,
           });
 
-          totalAmount += product.price * item.quantity;
+          subtotal += product.price * item.quantity;
         }
 
         // Check for out of stock products
@@ -157,11 +188,29 @@ class OrderController {
           );
         }
 
-        // Create order
+        // Fetch admin profile to get tax rate
+        const adminProfile = await adminProfileService.findOne(
+          {},
+          { taxRate: 1, currency: 1 },
+        );
+        const taxRate = adminProfile?.taxRate || 0;
+        const taxAmount = subtotal * (taxRate / 100);
+        const totalAmount = subtotal + taxAmount;
+
+        // Calculate CGST and SGST (split tax equally for intra-state supply in India)
+        const cgstAmount = taxRate > 0 ? taxAmount / 2 : 0;
+        const sgstAmount = taxRate > 0 ? taxAmount / 2 : 0;
+
+        // Create order with tax breakdown
         const order = await orderService.create({
           user: userId,
           address: address,
           items: orderItems,
+          subtotal,
+          taxRate,
+          taxAmount,
+          cgstAmount,
+          sgstAmount,
           totalAmount,
           paymentStatus: PaymentStatus.PENDING,
           orderStatus: OrderStatus.CREATED,
@@ -176,7 +225,7 @@ class OrderController {
         }));
 
         try {
-          // Generate Stripe payment link
+          // Generate Stripe payment link with tax
           const paymentLink = await stripeService.generatePaymentLink({
             items: orderItems.map((item) => {
               const product = productMap.get(item.product.toString());
@@ -189,6 +238,8 @@ class OrderController {
             }),
             orderId: order!._id.toString(),
             userId: userId.toString(),
+            taxAmount: taxAmount,
+            taxDescription: `Tax (${taxRate}%)`,
           });
 
           // Create payment record
@@ -387,7 +438,7 @@ class OrderController {
 
       try {
         const { id } = req.params as { id: string };
-        const { orderStatus, paymentStatus } = req.body;
+        const { orderStatus, paymentStatus, estimatedDeliveryDate } = req.body;
 
         const order = await orderService.findById(id, {}, { session });
 
@@ -418,6 +469,21 @@ class OrderController {
                 }),
               );
             }
+
+            // Require estimated delivery date when accepting order
+            if (!estimatedDeliveryDate) {
+              await session.abortTransaction();
+              session.endSession();
+              return next(
+                new ServerError({
+                  message:
+                    "Estimated delivery date is required when accepting an order",
+                  status: httpStatus.BAD_REQUEST,
+                }),
+              );
+            }
+
+            updateData.estimatedDeliveryDate = new Date(estimatedDeliveryDate);
           }
 
           updateData.orderStatus = orderStatus as OrderStatus;
@@ -639,5 +705,3 @@ class OrderController {
 
 const orderController = new OrderController();
 export default orderController;
-
-

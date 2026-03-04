@@ -2,18 +2,14 @@ import Stripe from "stripe";
 
 import { env, stripe } from "@config";
 import {
-  CreatePaymentLinkInput,
   CreatePaymentLinkOutput,
   StripeLineItem,
+  StripeServiceInput,
 } from "@types";
 
 class StripeService {
-  /**
-   * Generate a Stripe payment link for an order
-   * Returns payment link URL and payment intent ID
-   */
   async generatePaymentLink(
-    input: CreatePaymentLinkInput,
+    input: StripeServiceInput,
   ): Promise<CreatePaymentLinkOutput> {
     try {
       // Build line items for Stripe
@@ -30,6 +26,21 @@ class StripeService {
         },
         quantity: item.quantity,
       }));
+
+      // Add tax as a separate line item if provided
+      if (input.taxAmount && input.taxAmount > 0) {
+        lineItems.push({
+          price_data: {
+            currency: "inr",
+            product_data: {
+              name: input.taxDescription || "Tax",
+              description: "Applicable taxes (CGST + SGST)",
+            },
+            unit_amount: Math.round(input.taxAmount * 100),
+          },
+          quantity: 1,
+        });
+      }
 
       // Create checkout session with payment intent
       const session = await stripe.checkout.sessions.create({

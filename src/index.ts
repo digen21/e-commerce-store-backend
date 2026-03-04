@@ -1,23 +1,29 @@
-import cors from "cors";
-import express from "express";
+import compression from "compression";
 import cookieParser from "cookie-parser";
+import express from "express";
 import helmet from "helmet";
 import httpStatus from "http-status";
-import compression from "compression";
 
 import { connectDatabase, env } from "@config";
 
+import {
+  errorHandler,
+  initCors,
+  initPassport,
+  requestLogger,
+} from "@middlewares";
 import useRoutes from "@routes";
-import { errorHandler, initPassport, requestLogger } from "@middlewares";
 import { logger } from "@utils";
 
 const app = express();
 
+app.set("trust proxy", 1);
+
+initCors(app);
+
 app.use(requestLogger);
 
 app.use(helmet());
-
-app.use(cors());
 
 app.use(cookieParser());
 

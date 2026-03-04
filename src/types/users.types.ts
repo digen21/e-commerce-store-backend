@@ -17,6 +17,7 @@ export interface IUser {
   role: UserRoles;
   createdAt: Date;
   updatedAt: Date;
+  verifiedAt: Date;
   isVerified: boolean;
 }
 

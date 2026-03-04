@@ -36,7 +36,12 @@ const OrderSchema = new mongoose.Schema<IOrder>(
     address: { type: mongoose.Schema.Types.ObjectId, ref: "UserDetails" },
     paymentId: { type: mongoose.Schema.Types.ObjectId, ref: "Payment" },
     items: [OrderItemSchema],
-    totalAmount: Number,
+    subtotal: { type: Number, required: true, default: 0 },
+    taxRate: { type: Number, required: true, default: 0, min: 0, max: 100 },
+    taxAmount: { type: Number, required: true, default: 0 },
+    cgstAmount: { type: Number, default: 0 },
+    sgstAmount: { type: Number, default: 0 },
+    totalAmount: { type: Number, required: true, default: 0 },
     paymentStatus: {
       type: String,
       enum: Object.values(PaymentStatus),
@@ -47,6 +52,7 @@ const OrderSchema = new mongoose.Schema<IOrder>(
       enum: Object.values(OrderStatus),
       default: OrderStatus.CREATED,
     },
+    estimatedDeliveryDate: { type: Date },
     paymentStatusTimeline: StatusTimeLineSchema,
     orderStatusTimeLine: OrderTimeLineSchema,
   },
@@ -56,6 +62,7 @@ const OrderSchema = new mongoose.Schema<IOrder>(
 OrderSchema.index({ userId: 1, createdAt: -1 });
 OrderSchema.index({ paymentStatus: 1 });
 OrderSchema.index({ orderStatus: 1 });
+OrderSchema.index({ user: 1, paymentStatus: 1, orderStatus: 1 }); // For pending order checks
 
 OrderSchema.plugin(mongoosePaginate);
 export default mongoose.model<IOrder, PaginateModel<IOrder>>(
@@ -63,5 +70,3 @@ export default mongoose.model<IOrder, PaginateModel<IOrder>>(
   OrderSchema,
   "orders",
 );
-
-

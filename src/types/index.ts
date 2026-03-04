@@ -1,3 +1,4 @@
+export * from "./admin.types";
 export * from "./analytics.types";
 export * from "./error.types";
 export * from "./mail.types";

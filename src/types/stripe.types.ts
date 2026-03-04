@@ -1,8 +1,15 @@
+export interface StripeServiceInput extends CreatePaymentLinkInput {
+  subtotal?: number;
+  taxAmount?: number;
+  taxDescription?: string;
+}
+
 export interface StripeLineItem {
   price_data: {
     currency: string;
     product_data: {
       name: string;
+      description?: string;
     };
     unit_amount: number;
   };

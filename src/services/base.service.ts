@@ -9,8 +9,18 @@ import {
   UpdateQuery,
 } from "mongoose";
 
-import { Analytics, Order, Payment, Product, Token, User, UserDetails } from "@models";
 import {
+  AdminProfile,
+  Analytics,
+  Order,
+  Payment,
+  Product,
+  Token,
+  User,
+  UserDetails,
+} from "@models";
+import {
+  IAdminProfile,
   IAnalytics,
   IOrder,
   IPayment,
@@ -93,3 +103,6 @@ export const orderService = new BaseRepository<IOrder>(Order);
 export const productService = new BaseRepository<IProduct>(Product);
 export const analyticsService = new BaseRepository<IAnalytics>(Analytics);
 export const paymentService = new BaseRepository<IPayment>(Payment);
+export const adminProfileService = new BaseRepository<IAdminProfile>(
+  AdminProfile,
+);
