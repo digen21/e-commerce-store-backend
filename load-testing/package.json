@@ -1,0 +1,19 @@
+{
+  "name": "ecommerce-load-testing",
+  "version": "1.0.0",
+  "description": "Load testing POC for e-commerce API",
+  "scripts": {
+    "test:register": "k6 run tests/user-registration.js",
+    "test:register:heavy": "k6 run tests/user-registration.js --vus 100 --duration 30s",
+    "test:login": "k6 run tests/user-login.js",
+    "test:products": "k6 run tests/product-listing.js",
+    "test:orders": "k6 run tests/order-creation.js",
+    "test:all": "k6 run tests/smoke-test.js",
+    "test:stress": "k6 run tests/stress-test.js",
+    "test:spike": "k6 run tests/spike-test.js",
+    "report": "k6 run --out json=results/results.json tests/smoke-test.js"
+  },
+  "devDependencies": {
+    "k6": "^0.0.0"
+  }
+}
