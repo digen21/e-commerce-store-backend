@@ -3,9 +3,12 @@ import cors, { CorsOptions } from "cors";
 import { env } from "@config";
 
 const allowedOrigins = new Set(
-  [env.FRONTEND_URL, "http://localhost:5173", "http://127.0.0.1:5173"].filter(
-    Boolean,
-  ),
+  [
+    env.FRONTEND_URL,
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://thread-craft.netlify.app", // Production frontend
+  ].filter(Boolean),
 );
 
 const ngrokRegex = /^https:\/\/[a-z0-9-]+\.ngrok-free\.app$/;

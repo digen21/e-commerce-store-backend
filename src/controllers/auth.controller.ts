@@ -113,7 +113,7 @@ class AuthController {
     res.cookie("access_token", token, {
       httpOnly: true,
       secure: env.IS_PROD,
-      sameSite: "strict",
+      sameSite: env.IS_PROD ? "none" : "lax",
       maxAge: 24 * 60 * 60 * 1000,
     });
 
@@ -294,7 +294,7 @@ class AuthController {
     res.clearCookie("access_token", {
       httpOnly: true,
       secure: env.IS_PROD,
-      sameSite: "strict",
+      sameSite: env.IS_PROD ? "none" : "lax",
     });
 
     return res.status(httpStatus.OK).send({
