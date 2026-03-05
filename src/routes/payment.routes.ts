@@ -1,7 +1,8 @@
 import express from "express";
 
 import { paymentController } from "@controllers";
-import { isAuth, rateLimiter } from "@middlewares";
+import { isAuth, rateLimiter, validate } from "@middlewares";
+import { getInvoiceValidatorSchema } from "@validators";
 
 const paymentRouter = express.Router();
 
@@ -12,12 +13,13 @@ paymentRouter.post(
   paymentController.webhook,
 );
 
-// Payment link generation - rate limited
+// Get invoice for successful payment - rate limited
 paymentRouter.get(
-  "/generate-link",
+  "/invoices/:orderId",
   isAuth,
   rateLimiter,
-  paymentController.generatePaymentLink,
+  validate(getInvoiceValidatorSchema),
+  paymentController.getInvoice,
 );
 
 export default paymentRouter;

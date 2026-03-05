@@ -1,9 +1,10 @@
 import { NextFunction, Request, Response } from "express";
 import httpStatus from "http-status";
-import { PaginateOptions } from "mongoose";
+import { PaginateOptions, Types } from "mongoose";
 
+import { Order } from "@models";
 import { userDetailService, userService } from "@services";
-import { IUser, IUserDetailsDoc, UserRoles } from "@types";
+import { IUser, IUserDetailsDoc, OrderStatus, UserRoles } from "@types";
 import {
   catchAsync,
   omitPassword,
@@ -14,6 +15,26 @@ import {
 const MAX_ADDRESSES = 5;
 
 class UserDetailsController {
+  private calculateOrderStats = async (userId: string | Types.ObjectId) => {
+    const stats = await Order.aggregate([
+      {
+        $match: {
+          user: userId,
+          orderStatus: OrderStatus.FULFILLED,
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalOrders: { $sum: 1 },
+          totalSpent: { $sum: "$totalAmount" },
+        },
+      },
+    ]);
+
+    return stats[0] || { totalOrders: 0, totalSpent: 0 };
+  };
+
   getMyDetails = catchAsync(async (req: Request, res: Response) => {
     const userId = (req.user as IUser)._id;
 
@@ -37,6 +58,8 @@ class UserDetailsController {
 
     const userWithoutPassword = omitPassword(user.toObject());
 
+    const stats = await this.calculateOrderStats(userId);
+
     return res.status(httpStatus.OK).send({
       success: true,
       message: "User details retrieved successfully",
@@ -44,7 +67,7 @@ class UserDetailsController {
         user: userWithoutPassword,
         details: {
           addresses: userDetails.addresses,
-          stats: userDetails.stats,
+          stats,
         },
       },
       status: httpStatus.OK,
@@ -118,10 +141,42 @@ class UserDetailsController {
       result.docs.map((doc) => doc as unknown as IUser),
     );
 
+    // Fetch order stats for all users in a single aggregation to avoid N+1
+    const userIds = usersWithoutPassword.map((user) => user._id);
+    const orderStats = await Order.aggregate([
+      {
+        $match: {
+          user: { $in: userIds },
+          orderStatus: OrderStatus.FULFILLED,
+        },
+      },
+      {
+        $group: {
+          _id: "$user",
+          totalOrders: { $sum: 1 },
+          totalSpent: { $sum: "$totalAmount" },
+        },
+      },
+    ]);
+
+    // Create a map of userId -> stats for quick lookup
+    const statsMap = new Map(
+      orderStats.map((stat) => [
+        stat._id.toString(),
+        { totalOrders: stat.totalOrders, totalSpent: stat.totalSpent },
+      ]),
+    );
+
+    // Add stats to each user
+    const usersWithStats = usersWithoutPassword.map((user) => ({
+      ...user,
+      stats: statsMap.get(user._id.toString()) || { totalOrders: 0, totalSpent: 0 },
+    }));
+
     return res.status(httpStatus.OK).send({
       success: true,
       message: "Users retrieved successfully",
-      data: usersWithoutPassword,
+      data: usersWithStats,
       pagination: {
         totalDocs: result.totalDocs,
         limit: result.limit,
@@ -153,6 +208,8 @@ class UserDetailsController {
 
       const userWithoutPassword = omitPassword(user.toObject());
 
+      const stats = await this.calculateOrderStats(id);
+
       const userDetails = (await userDetailService.findOne({
         user: user._id,
       })) as IUserDetailsDoc;
@@ -165,7 +222,7 @@ class UserDetailsController {
           details: userDetails
             ? {
                 addresses: userDetails.addresses,
-                stats: userDetails.stats,
+                stats,
               }
             : null,
         },
@@ -201,6 +258,8 @@ class UserDetailsController {
 
       const userWithoutPassword = omitPassword(user.toObject());
 
+      const stats = await this.calculateOrderStats(id);
+
       let userDetails = await userDetailService.findOne({ user: user._id });
 
       if (!userDetails) {
@@ -216,7 +275,7 @@ class UserDetailsController {
           user: userWithoutPassword,
           details: {
             addresses: userDetails.addresses,
-            stats: userDetails.stats,
+            stats,
           },
         },
         status: httpStatus.OK,

@@ -14,6 +14,7 @@ import {
   getAllOrdersValidatorSchema,
   getOrderValidatorSchema,
   getOrdersValidatorSchema,
+  initPaymentValidatorSchema,
   updateOrderStatusValidatorSchema,
 } from "@validators";
 
@@ -27,6 +28,15 @@ orderRouter.post(
   idempotencyMiddleware,
   validate(createOrderValidatorSchema),
   orderController.createOrder,
+);
+
+orderRouter.post(
+  "/init-payment",
+  isAuth,
+  rateLimiter,
+  idempotencyMiddleware,
+  validate(initPaymentValidatorSchema),
+  orderController.initPayment,
 );
 
 orderRouter.get(

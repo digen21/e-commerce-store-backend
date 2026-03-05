@@ -21,3 +21,12 @@ export const adminProfileValidatorSchema = Joi.object({
     lowStockThreshold: Joi.number().min(0).default(10),
   }),
 });
+
+export const getSalesPerformanceValidatorSchema = Joi.object({
+  query: Joi.object({
+    period: Joi.string().valid("weekly", "monthly").required().messages({
+      "any.only": "Period must be either 'weekly' or 'monthly'",
+      "any.required": "Period is required",
+    }),
+  }),
+});

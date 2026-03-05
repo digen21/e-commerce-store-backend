@@ -1,5 +1,12 @@
 import Joi from "joi";
 import id from "./id.validators";
+import { VariantSizes } from "@types";
+
+const productVariantSchema = Joi.object({
+  size: Joi.string().valid(...Object.values(VariantSizes)),
+  stock: Joi.number().min(0).required(),
+  sku: Joi.string().trim().allow(""),
+});
 
 export const createProductValidatorSchema = Joi.object({
   body: Joi.object({
@@ -9,6 +16,7 @@ export const createProductValidatorSchema = Joi.object({
     category: Joi.string().trim(),
     stock: Joi.number().min(0).required(),
     images: Joi.array().items(Joi.string().uri()).default([]),
+    variants: Joi.array().items(productVariantSchema).default([]),
   }),
 });
 
@@ -23,6 +31,7 @@ export const updateProductValidatorSchema = Joi.object({
     category: Joi.string().trim(),
     stock: Joi.number().min(0),
     images: Joi.array().items(Joi.string().uri()),
+    variants: Joi.array().items(productVariantSchema),
   }),
 });
 

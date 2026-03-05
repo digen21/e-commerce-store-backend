@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import httpStatus from "http-status";
 
-import { adminProfileService } from "@services";
+import { adminProfileService, analyticsLogger } from "@services";
 import { IAdminProfile, IUser } from "@types";
 import { catchAsync, ServerError } from "@utils";
 
@@ -88,6 +88,51 @@ class AdminController {
       });
     },
   );
+
+  getSalesPerformance = catchAsync(async (req: Request, res: Response) => {
+    const { period } = req.query as { period: "weekly" | "monthly" };
+
+    if (!period || !["weekly", "monthly"].includes(period)) {
+      throw new ServerError({
+        message: "Invalid period. Must be 'weekly' or 'monthly'",
+        status: httpStatus.BAD_REQUEST,
+      });
+    }
+
+    const salesData = await analyticsLogger.getSalesPerformance(period);
+
+    return res.status(httpStatus.OK).send({
+      success: true,
+      message: "Sales performance retrieved successfully",
+      data: salesData,
+      status: httpStatus.OK,
+    });
+  });
+
+  getOrderStatusDistribution = catchAsync(
+    async (_req: Request, res: Response) => {
+      const distributionData =
+        await analyticsLogger.getOrderStatusDistribution();
+
+      return res.status(httpStatus.OK).send({
+        success: true,
+        message: "Order status distribution retrieved successfully",
+        data: distributionData,
+        status: httpStatus.OK,
+      });
+    },
+  );
+
+  getDashboardOverview = catchAsync(async (_req: Request, res: Response) => {
+    const overviewData = await analyticsLogger.getDashboardOverview();
+
+    return res.status(httpStatus.OK).send({
+      success: true,
+      message: "Dashboard overview retrieved successfully",
+      data: overviewData,
+      status: httpStatus.OK,
+    });
+  });
 }
 
 const adminController = new AdminController();

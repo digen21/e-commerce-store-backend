@@ -31,6 +31,9 @@ export interface IOrderItem {
   product: Types.ObjectId;
   price: number;
   quantity: number;
+  variant?: Types.ObjectId | string;
+  size?: string;
+  reservedStock?: number; // Track reserved stock for pending payments
 }
 
 export interface IOrder {
@@ -53,6 +56,7 @@ export interface IOrder {
   orderStatusTimeLine?: IOrderStatusTimeline;
 
   estimatedDeliveryDate?: Date;
+  failedReason?: string;
   createdAt: Date;
   updatedAt: Date;
 }

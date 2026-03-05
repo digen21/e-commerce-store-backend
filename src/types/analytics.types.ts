@@ -37,4 +37,37 @@ export interface IAnalytics {
   updatedAt: Date;
 }
 
+export interface AnalyticTrend {
+  date: string;
+  revenue: number;
+  orders: number;
+}
+export interface AnalyticSummery {
+  totalRevenue: number;
+  totalOrders: number;
+  averageOrderValue: number;
+}
+export interface SalePerformanceResponse {
+  period: AnalyticPeriod;
+  currency: "INR";
+  trends: AnalyticTrend[];
+  summary: AnalyticSummery;
+}
+
+export interface StatusDistribution {
+  status: string;
+  count: number;
+  percentage: number;
+  color: string;
+}
+
+export interface DashboardMetrics {
+  productsChange: number;
+  ordersChange: number;
+  revenueChange: number;
+  conversionChange: number;
+}
+
+export type AnalyticPeriod = "weekly" | "monthly";
+
 export type IAnalyticsDoc = HydratedDocument<IAnalytics>;

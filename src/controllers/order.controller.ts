@@ -1,6 +1,11 @@
 import { NextFunction, Request, Response } from "express";
 import httpStatus from "http-status";
-import mongoose, { QueryFilter, Types } from "mongoose";
+import mongoose, {
+  PaginateOptions,
+  QueryFilter,
+  Types,
+  UpdateQuery,
+} from "mongoose";
 
 import { Product } from "@models";
 import {
@@ -12,6 +17,7 @@ import {
   stripeService,
   userDetailService,
 } from "@services";
+import { catchAsync, logger, ServerError } from "@utils";
 import {
   IOrder,
   IOrderDoc,
@@ -24,7 +30,6 @@ import {
   PaymentMethod,
   PaymentStatus,
 } from "@types";
-import { catchAsync, logger, ServerError } from "@utils";
 
 const ORDER_STATUS_META = {
   [OrderStatus.ACCEPTED]: {
@@ -92,7 +97,6 @@ class OrderController {
               status: httpStatus.BAD_REQUEST,
               meta: {
                 existingOrderId: existingPendingOrder._id,
-                paymentIntentId: existingPendingOrder.paymentId,
               },
             }),
           );
@@ -107,7 +111,7 @@ class OrderController {
 
         if (!userDetails) {
           throw new ServerError({
-            message: "Invalid or missing shipping address",
+            message: "Missing shipping address",
             status: httpStatus.BAD_REQUEST,
             meta: { action: "Add address via PUT /api/users/me" },
           });
@@ -153,7 +157,7 @@ class OrderController {
           );
         }
 
-        // Validate stock and build order items
+        // Validate stock availability (but do NOT deduct yet - will deduct in initPayment)
         const orderItems: IOrderItem[] = [];
         let subtotal = 0;
         const outOfStockProducts: string[] = [];
@@ -161,15 +165,48 @@ class OrderController {
         for (const item of items) {
           const product = productMap.get(item.product.toString());
 
-          if (product.stock < item.quantity) {
-            outOfStockProducts.push(product.title);
-          }
+          // Check if variant is specified and validate variant stock
+          if (item.variant) {
+            const variant = product.variants?.find(
+              (v) => v._id?.toString() === item.variant?.toString(),
+            );
 
-          orderItems.push({
-            product: product._id,
-            price: product.price,
-            quantity: item.quantity,
-          });
+            if (!variant) {
+              await session.abortTransaction();
+              session.endSession();
+              return next(
+                new ServerError({
+                  message: `Variant not found for product: ${product.title}`,
+                  status: httpStatus.BAD_REQUEST,
+                }),
+              );
+            }
+
+            if (variant.stock < item.quantity) {
+              outOfStockProducts.push(
+                `${product.title} (Size: ${variant.size})`,
+              );
+            }
+
+            orderItems.push({
+              product: product._id,
+              price: product.price,
+              quantity: item.quantity,
+              variant: variant._id,
+              size: variant.size,
+            });
+          } else {
+            // Use global stock if no variant specified
+            if (product.stock < item.quantity) {
+              outOfStockProducts.push(product.title);
+            }
+
+            orderItems.push({
+              product: product._id,
+              price: product.price,
+              quantity: item.quantity,
+            });
+          }
 
           subtotal += product.price * item.quantity;
         }
@@ -201,111 +238,422 @@ class OrderController {
         const cgstAmount = taxRate > 0 ? taxAmount / 2 : 0;
         const sgstAmount = taxRate > 0 ? taxAmount / 2 : 0;
 
-        // Create order with tax breakdown
-        const order = await orderService.create({
-          user: userId,
-          address: address,
-          items: orderItems,
-          subtotal,
-          taxRate,
-          taxAmount,
-          cgstAmount,
-          sgstAmount,
-          totalAmount,
-          paymentStatus: PaymentStatus.PENDING,
-          orderStatus: OrderStatus.CREATED,
-        } as Partial<IOrderDoc>);
+        // Create order with tax breakdown (PENDING status, stock NOT deducted yet)
+        const order = (await orderService.create(
+          {
+            user: userId,
+            address: address,
+            items: orderItems,
+            subtotal,
+            taxRate,
+            taxAmount,
+            cgstAmount,
+            sgstAmount,
+            totalAmount,
+            paymentStatus: PaymentStatus.PENDING,
+            orderStatus: OrderStatus.PENDING,
+          } as Partial<IOrderDoc>,
+          { session },
+        )) as Partial<IOrderDoc>;
 
-        // Update product stock (batch operation)
-        const stockUpdateOperations = orderItems.map((item) => ({
-          updateOne: {
-            filter: { _id: item.product },
-            update: { $inc: { stock: -item.quantity } },
+        // Log analytics
+        await analyticsLogger.logOrderCreated(
+          userId.toString(),
+          order!._id.toString(),
+          totalAmount,
+        );
+
+        await session.commitTransaction();
+        session.endSession();
+
+        return res.status(httpStatus.CREATED).send({
+          success: true,
+          message:
+            "Order created successfully. Proceed to payment to complete your order.",
+          data: {
+            order: {
+              _id: order._id,
+              user: order.user,
+              items: order.items,
+              subtotal: order.subtotal,
+              taxAmount: order.taxAmount,
+              cgstAmount: order.cgstAmount,
+              sgstAmount: order.sgstAmount,
+              totalAmount: order.totalAmount,
+              paymentStatus: order.paymentStatus,
+              orderStatus: order.orderStatus,
+              createdAt: order.createdAt,
+            },
           },
+          status: httpStatus.CREATED,
+        });
+      } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        throw error;
+      }
+    },
+  );
+
+  initPayment = catchAsync(
+    async (req: Request, res: Response, next: NextFunction) => {
+      const userId = (req.user as IUser)._id;
+      const { orderId } = req.body;
+      const session = await mongoose.startSession();
+      session.startTransaction();
+
+      try {
+        // Find the order
+        const order = await orderService.findById(orderId, {}, { session });
+
+        if (!order) {
+          await session.abortTransaction();
+          session.endSession();
+          return next(
+            new ServerError({
+              message: "Order not found",
+              status: httpStatus.NOT_FOUND,
+            }),
+          );
+        }
+
+        // Check if user owns the order
+        if (order.user.toString() !== userId.toString()) {
+          await session.abortTransaction();
+          session.endSession();
+          return next(
+            new ServerError({
+              message: "Unauthorized to initialize payment for this order",
+              status: httpStatus.FORBIDDEN,
+            }),
+          );
+        }
+
+        // Check if order is in PENDING status
+        if (
+          order.orderStatus !== OrderStatus.PENDING ||
+          order.paymentStatus !== PaymentStatus.PENDING
+        ) {
+          await session.abortTransaction();
+          session.endSession();
+          return next(
+            new ServerError({
+              message:
+                "Order is not in pending state. Payment can only be initialized for pending orders.",
+              status: httpStatus.BAD_REQUEST,
+              meta: {
+                orderStatus: order.orderStatus,
+                paymentStatus: order.paymentStatus,
+              },
+            }),
+          );
+        }
+
+        // Check if payment record already exists
+        const existingPayment = await paymentService.findOne(
+          { order: order._id },
+          {},
+          { session },
+        );
+
+        if (existingPayment) {
+          // If payment is already successful, return existing payment info
+          if (existingPayment.status === PaymentStatus.SUCCESS) {
+            await session.commitTransaction();
+            session.endSession();
+            return res.status(httpStatus.OK).send({
+              success: true,
+              message: "Payment already completed",
+              data: {
+                order,
+                payment: {
+                  status: existingPayment.status,
+                  paidAt: existingPayment.paidAt,
+                },
+              },
+              status: httpStatus.OK,
+            });
+          }
+
+          // If payment is pending and has payment link, return existing link
+          if (
+            existingPayment.status === PaymentStatus.PENDING &&
+            existingPayment.stripeData?.paymentLinkId
+          ) {
+            await session.commitTransaction();
+            session.endSession();
+            return res.status(httpStatus.OK).send({
+              success: true,
+              message: "Payment link already generated",
+              data: {
+                order,
+                payment: {
+                  paymentLinkId: existingPayment.stripeData.paymentLinkId,
+                  status: existingPayment.status,
+                  amount: existingPayment.amount,
+                  currency: existingPayment.currency,
+                },
+              },
+              status: httpStatus.OK,
+            });
+          }
+        }
+
+        // Build product map for payment link generation
+        const productIds = order.items.map((item) => item.product.toString());
+        const products = await productService.find(
+          { _id: { $in: productIds } },
+          {},
+          { session },
+        );
+        const productMap = new Map(products.map((p) => [p._id.toString(), p]));
+
+        // CRITICAL: Validate stock availability with locking
+        // Use optimistic locking to prevent race conditions
+        const stockValidationResults: Array<{
+          productId: string;
+          variantId?: string;
+          requestedQuantity: number;
+          availableStock: number;
+          locked: boolean;
+        }> = [];
+
+        for (const item of order.items) {
+          if (item.variant) {
+            // For variant items, use findOneAndUpdate with condition for atomic locking
+            const variantLockResult = await Product.findOneAndUpdate(
+              {
+                _id: item.product,
+                "variants._id": item.variant,
+                "variants.stock": { $gte: item.quantity },
+              },
+              {
+                $inc: { "variants.$[variant].stock": -item.quantity },
+              },
+              {
+                session,
+                arrayFilters: [{ "variant._id": item.variant }],
+                new: true,
+              },
+            );
+
+            if (!variantLockResult) {
+              // Stock locking failed - either product/variant doesn't exist or insufficient stock
+              const product = productMap.get(item.product.toString());
+              const variant = product?.variants?.find(
+                (v) => v._id?.toString() === item.variant?.toString(),
+              );
+              stockValidationResults.push({
+                productId: item.product.toString(),
+                variantId: item.variant.toString(),
+                requestedQuantity: item.quantity,
+                availableStock: variant?.stock || 0,
+                locked: false,
+              });
+            } else {
+              stockValidationResults.push({
+                productId: item.product.toString(),
+                variantId: item.variant.toString(),
+                requestedQuantity: item.quantity,
+                availableStock:
+                  variantLockResult.variants?.find(
+                    (v) => v._id?.toString() === item.variant?.toString(),
+                  )?.stock || 0,
+                locked: true,
+              });
+            }
+          } else {
+            // For non-variant items, lock global stock
+            const productLockResult = await Product.findOneAndUpdate(
+              {
+                _id: item.product,
+                stock: { $gte: item.quantity },
+              },
+              {
+                $inc: { stock: -item.quantity },
+              },
+              {
+                session,
+                new: true,
+              },
+            );
+
+            if (!productLockResult) {
+              // Stock locking failed - insufficient stock
+              const product = productMap.get(item.product.toString());
+              stockValidationResults.push({
+                productId: item.product.toString(),
+                requestedQuantity: item.quantity,
+                availableStock: product?.stock || 0,
+                locked: false,
+              });
+            } else {
+              stockValidationResults.push({
+                productId: item.product.toString(),
+                requestedQuantity: item.quantity,
+                availableStock: productLockResult.stock,
+                locked: true,
+              });
+            }
+          }
+        }
+
+        // Check if any stock locking failed
+        const failedLocks = stockValidationResults.filter(
+          (result) => !result.locked,
+        );
+
+        if (failedLocks.length > 0) {
+          await session.abortTransaction();
+          session.endSession();
+
+          // Update order status to FAILED with reason
+          const failureReason = `Insufficient stock: ${failedLocks
+            .map((lock) => {
+              const product = productMap.get(lock.productId);
+              if (lock.variantId) {
+                const variant = product?.variants?.find(
+                  (v) => v._id?.toString() === lock.variantId,
+                );
+                return `${product?.title} (Size: ${variant?.size}) - Requested: ${lock.requestedQuantity}, Available: ${lock.availableStock}`;
+              }
+              return `${product?.title} - Requested: ${lock.requestedQuantity}, Available: ${lock.availableStock}`;
+            })
+            .join("; ")}`;
+
+          await orderService.update(
+            { _id: order._id },
+            {
+              orderStatus: OrderStatus.FAILED,
+              failedReason: failureReason,
+            },
+          );
+
+          return next(
+            new ServerError({
+              message:
+                "Insufficient stock available. Some items in your order are no longer available in the requested quantity.",
+              status: httpStatus.BAD_REQUEST,
+              meta: {
+                failedItems: failedLocks.map((lock) => ({
+                  productId: lock.productId,
+                  variantId: lock.variantId,
+                  requestedQuantity: lock.requestedQuantity,
+                  availableStock: lock.availableStock,
+                })),
+                failureReason,
+              },
+            }),
+          );
+        }
+
+        // Stock successfully locked, now update order with reservedStock
+        const orderItemsWithReservedStock = order.items.map((item) => ({
+          ...item,
+          reservedStock: item.quantity,
         }));
 
-        try {
-          // Generate Stripe payment link with tax
-          const paymentLink = await stripeService.generatePaymentLink({
-            items: orderItems.map((item) => {
-              const product = productMap.get(item.product.toString());
-              return {
-                productId: item.product.toString(),
-                productName: product.title,
-                quantity: item.quantity,
-                unitPrice: item.price,
-              };
-            }),
-            orderId: order!._id.toString(),
-            userId: userId.toString(),
-            taxAmount: taxAmount,
-            taxDescription: `Tax (${taxRate}%)`,
-          });
+        await orderService.update(
+          { _id: order._id },
+          {
+            items: orderItemsWithReservedStock,
+          },
+          { session },
+        );
 
-          // Create payment record
-          const paymentItems: IPaymentItem[] = orderItems.map((item) => {
+        // Stock successfully locked, now create payment link
+        const paymentLink = await stripeService.generatePaymentLink({
+          items: order.items.map((item) => {
             const product = productMap.get(item.product.toString());
             return {
-              productId: item.product,
+              productId: item.product.toString(),
               productName: product.title,
               quantity: item.quantity,
               unitPrice: item.price,
-              totalPrice: item.price * item.quantity,
+              variantId: item.variant?.toString(),
+              size: item.size,
             };
-          });
+          }),
+          orderId: order._id.toString(),
+          userId: userId.toString(),
+          taxAmount: order.taxAmount,
+          taxDescription: `Tax (${order.taxRate}%)`,
+        });
 
-          await paymentService.create({
-            order: order._id as Types.ObjectId,
-            user: userId,
-            paymentIntentId: paymentLink.paymentIntentId,
-            paymentLinkId: paymentLink.paymentLinkId,
-            paymentMethod: PaymentMethod.STRIPE,
-            status: PaymentStatus.PENDING,
-            amount: totalAmount,
-            currency: "inr",
-            items: paymentItems,
-            stripeData: {
-              paymentIntentId: paymentLink.paymentIntentId,
+        // Create payment items
+        const paymentItems: IPaymentItem[] = order.items.map((item) => {
+          const product = productMap.get(item.product.toString());
+          return {
+            productId: item.product,
+            productName: product.title,
+            quantity: item.quantity,
+            unitPrice: item.price,
+            totalPrice: item.price * item.quantity,
+          };
+        });
+
+        // Create or update payment record
+        // NOTE: paymentIntentId is NOT stored here - it will be populated by webhook
+        // when payment_intent.succeeded event is received
+        if (existingPayment) {
+          await paymentService.update(
+            { _id: existingPayment._id },
+            {
               paymentLinkId: paymentLink.paymentLinkId,
-            },
-          });
-
-          if (stockUpdateOperations.length > 0) {
-            await Product.bulkWrite(stockUpdateOperations, { session });
-          }
-
-          // Log analytics
-          await analyticsLogger.logOrderCreated(
-            userId.toString(),
-            order!._id.toString(),
-            totalAmount,
-          );
-
-          await session.commitTransaction();
-          session.endSession();
-
-          return res.status(httpStatus.CREATED).send({
-            success: true,
-            message: "Order created successfully. Please complete payment.",
-            data: {
-              order,
-              payment: {
-                paymentUrl: paymentLink.paymentLinkUrl,
-                paymentIntentId: paymentLink.paymentIntentId,
-                amount: totalAmount,
-                currency: "inr",
-                expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+              status: PaymentStatus.PENDING,
+              amount: order.totalAmount,
+              currency: "inr",
+              items: paymentItems,
+              stripeData: {
+                paymentLinkId: paymentLink.paymentLinkId,
+                checkoutSessionId: paymentLink.paymentLinkId,
               },
             },
-            status: httpStatus.CREATED,
-          });
-        } catch (error) {
-          await orderService.update(
-            { _id: order._id },
-            { orderStatus: OrderStatus.FAILED },
+            { session },
           );
-          throw error;
+        } else {
+          await paymentService.create(
+            {
+              order: order._id as Types.ObjectId,
+              user: userId,
+              paymentLinkId: paymentLink.paymentLinkId,
+              paymentMethod: PaymentMethod.STRIPE,
+              status: PaymentStatus.PENDING,
+              amount: order.totalAmount,
+              currency: "inr",
+              items: paymentItems,
+              stripeData: {
+                paymentLinkId: paymentLink.paymentLinkId,
+                checkoutSessionId: paymentLink.paymentLinkId,
+              },
+            },
+            { session },
+          );
         }
+
+        await session.commitTransaction();
+        session.endSession();
+
+        return res.status(httpStatus.OK).send({
+          success: true,
+          message: "Payment link generated successfully",
+          data: {
+            order: {
+              _id: order._id,
+              orderStatus: order.orderStatus,
+              paymentStatus: order.paymentStatus,
+              totalAmount: order.totalAmount,
+            },
+            payment: {
+              paymentUrl: paymentLink.paymentLinkUrl,
+              paymentLinkId: paymentLink.paymentLinkId,
+              amount: order.totalAmount,
+              currency: "inr",
+              expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+            },
+          },
+          status: httpStatus.OK,
+        });
       } catch (error) {
         await session.abortTransaction();
         session.endSession();
@@ -387,12 +735,29 @@ class OrderController {
         );
 
         // Restore product stock (batch operation)
-        const stockRestoreOperations = order.items.map((item) => ({
-          updateOne: {
-            filter: { _id: item.product },
-            update: { $inc: { stock: item.quantity } },
-          },
-        }));
+        // If variant was ordered, restore variant stock; otherwise restore global stock
+        const stockRestoreOperations = order.items.flatMap((item) => {
+          if (item.variant) {
+            // Restore variant stock
+            return {
+              updateOne: {
+                filter: { _id: item.product, "variants._id": item.variant },
+                update: {
+                  $inc: { "variants.$[variant].stock": item.quantity },
+                },
+                arrayFilters: [{ "variant._id": item.variant }],
+              },
+            };
+          } else {
+            // Restore global stock
+            return {
+              updateOne: {
+                filter: { _id: item.product },
+                update: { $inc: { stock: item.quantity } },
+              },
+            };
+          }
+        });
 
         if (stockRestoreOperations.length > 0) {
           await Product.bulkWrite(stockRestoreOperations, { session });
@@ -438,7 +803,12 @@ class OrderController {
 
       try {
         const { id } = req.params as { id: string };
-        const { orderStatus, paymentStatus, estimatedDeliveryDate } = req.body;
+        const {
+          orderStatus,
+          paymentStatus,
+          estimatedDeliveryDate,
+          failedReason,
+        } = req.body;
 
         const order = await orderService.findById(id, {}, { session });
 
@@ -453,7 +823,7 @@ class OrderController {
           );
         }
 
-        const updateData: Partial<IOrder> = {};
+        const updateData: UpdateQuery<IOrder> = {};
 
         // Update order status if provided
         if (orderStatus && orderStatus !== order.orderStatus) {
@@ -502,6 +872,48 @@ class OrderController {
             ...order.orderStatusTimeLine,
             ...timelineUpdate,
           };
+
+          // Handle FAILED status - restore stock
+          if (orderStatus === OrderStatus.FAILED) {
+            // Store failed reason
+            updateData.failedReason = failedReason;
+
+            // Restore product stock
+            const stockRestoreOperations = order.items.flatMap((item) => {
+              if (item.variant) {
+                return {
+                  updateOne: {
+                    filter: { _id: item.product, "variants._id": item.variant },
+                    update: {
+                      $inc: { "variants.$[variant].stock": item.quantity },
+                    },
+                    arrayFilters: [{ "variant._id": item.variant }],
+                  },
+                };
+              }
+              return {
+                updateOne: {
+                  filter: { _id: item.product },
+                  update: { $inc: { stock: item.quantity } },
+                },
+              };
+            });
+
+            if (stockRestoreOperations.length > 0) {
+              await Product.bulkWrite(stockRestoreOperations, { session });
+            }
+
+            // Clear reservedStock - will be done in the same update
+            await orderService.update(
+              { _id: order._id },
+              {
+                $set: {
+                  "items.$[].reservedStock": 0,
+                },
+              },
+              { session },
+            );
+          }
         }
 
         // Update payment status if provided
@@ -621,7 +1033,7 @@ class OrderController {
       };
     }
 
-    const options = {
+    const options: PaginateOptions = {
       page: Number(page),
       limit: Number(limit),
       sort: { [sortBy as string]: Number(sortOrder) },
@@ -676,10 +1088,16 @@ class OrderController {
       };
     }
 
-    const options = {
+    const options: PaginateOptions = {
       page: Number(page),
       limit: Number(limit),
       sort: { [sortBy as string]: Number(sortOrder) },
+      populate: [
+        {
+          path: "user",
+          select: "name email",
+        },
+      ],
     };
 
     const result = await orderService.paginate(query, options);

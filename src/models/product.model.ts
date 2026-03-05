@@ -1,7 +1,13 @@
 import mongoose, { PaginateModel, Query } from "mongoose";
 import mongoosePaginate from "mongoose-paginate-v2";
 
-import { IProduct } from "@types";
+import { IProduct, IProductVariant, VariantSizes } from "@types";
+
+const ProductVariantSchema = new mongoose.Schema<IProductVariant>({
+  size: { type: String, enum: VariantSizes, required: true },
+  stock: { type: Number, required: true, min: 0 },
+  sku: { type: String },
+});
 
 const ProductSchema = new mongoose.Schema<IProduct>(
   {
@@ -14,6 +20,7 @@ const ProductSchema = new mongoose.Schema<IProduct>(
     isDeleted: { type: Boolean, default: false },
     deletedAt: { type: Date },
     expiresAt: { type: Date, index: true },
+    variants: { type: [ProductVariantSchema], default: [] },
   },
   { timestamps: true },
 );

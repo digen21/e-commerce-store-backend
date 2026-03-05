@@ -2,12 +2,21 @@ import { NextFunction, Request, Response } from "express";
 import httpStatus from "http-status";
 
 import { env } from "@config";
-import { productService } from "@services";
+import { adminProfileService, productService } from "@services";
 import { catchAsync, getUploadImageSignature, ServerError } from "@utils";
+import { IProductDoc, IUser } from "@types";
 
 class ProductController {
   createProduct = catchAsync(async (req: Request, res: Response) => {
     const productData = req.body;
+
+    // If variants are provided, calculate global stock as sum of variant stocks
+    if (productData.variants && productData.variants.length > 0) {
+      productData.stock = productData.variants.reduce(
+        (sum: number, v: { stock: number }) => sum + v.stock,
+        0,
+      );
+    }
 
     const product = await productService.create(productData);
 
@@ -60,6 +69,11 @@ class ProductController {
 
     const result = await productService.paginate(query, options);
 
+    result.docs = result.docs.map((p: IProductDoc) => ({
+      ...p.toObject(),
+      lowStock: p.stock <= 10,
+    }));
+
     return res.status(httpStatus.OK).send({
       success: true,
       message: "Products retrieved successfully",
@@ -96,6 +110,14 @@ class ProductController {
     async (req: Request, res: Response, next: NextFunction) => {
       const { id } = req.params;
       const updateData = req.body;
+
+      // If variants are provided, calculate global stock as sum of variant stocks
+      if (updateData.variants && updateData.variants.length > 0) {
+        updateData.stock = updateData.variants.reduce(
+          (sum: number, v: { stock: number }) => sum + v.stock,
+          0,
+        );
+      }
 
       const product = await productService.update({ _id: id }, updateData, {
         new: true,
@@ -178,6 +200,102 @@ class ProductController {
       status: httpStatus.OK,
     });
   });
+
+  /**
+   * Common method to fetch low stock products based on threshold
+   * Checks variant-level stock if variants exist, otherwise uses global stock
+   * @param lowStockThreshold - Maximum stock level to consider as "low stock"
+   * @returns Array of products with low stock
+   */
+  getLowStockProductsByThreshold = async (lowStockThreshold: number) => {
+    const pipeline = [
+      {
+        $match: {
+          $or: [
+            { stock: { $lte: lowStockThreshold } },
+            { "variants.stock": { $lte: lowStockThreshold } },
+          ],
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          image: { $arrayElemAt: ["$images", 0] },
+          name: "$title",
+          category: 1,
+          stockLeft: "$stock",
+          variants: {
+            $filter: {
+              input: "$variants",
+              as: "variant",
+              cond: { $lte: ["$$variant.stock", lowStockThreshold] },
+            },
+          },
+        },
+      },
+    ];
+
+    return await productService.aggregate(pipeline);
+  };
+
+  getLowStockProducts = catchAsync(async (req: Request, res: Response) => {
+    const adminDetails = await adminProfileService.findOne(
+      {
+        user: (req.user as IUser)._id,
+      },
+      { lowStockThreshold: 1 },
+    );
+
+    if (!adminDetails) {
+      throw new ServerError({
+        message: "Details not found. Please add details",
+        status: httpStatus.BAD_REQUEST,
+      });
+    }
+
+    const products = await this.getLowStockProductsByThreshold(
+      adminDetails.lowStockThreshold,
+    );
+
+    return res.status(httpStatus.OK).send({
+      success: true,
+      message: "Low stock products retrieved successfully",
+      data: products,
+      status: httpStatus.OK,
+    });
+  });
+
+  getLowStockProductsByFlag = catchAsync(
+    async (req: Request, res: Response) => {
+      const { threshold } = req.query;
+
+      if (!threshold) {
+        throw new ServerError({
+          message: "Threshold query parameter is required",
+          status: httpStatus.BAD_REQUEST,
+        });
+      }
+
+      const lowStockThreshold = Number(threshold);
+
+      if (isNaN(lowStockThreshold) || lowStockThreshold < 0) {
+        throw new ServerError({
+          message: "Threshold must be a non-negative number",
+          status: httpStatus.BAD_REQUEST,
+        });
+      }
+
+      const products =
+        await this.getLowStockProductsByThreshold(lowStockThreshold);
+
+      return res.status(httpStatus.OK).send({
+        success: true,
+        message: "Low stock products retrieved successfully",
+        data: products,
+        status: httpStatus.OK,
+      });
+    },
+  );
 }
 
 const productController = new ProductController();

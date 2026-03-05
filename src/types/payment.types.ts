@@ -34,6 +34,16 @@ export interface IPaymentItem {
   totalPrice: number;
 }
 
+export interface StripeData {
+  paymentIntentId?: string;
+  paymentLinkId?: string;
+  checkoutSessionId?: string;
+  chargeId?: string;
+  lastPaymentError?: string;
+  invoiceUrl?: string | null;
+  receiptNumber?: string;
+}
+
 export interface IPayment {
   _id: Types.ObjectId;
   order: Types.ObjectId | string;
@@ -45,16 +55,11 @@ export interface IPayment {
   amount: number;
   currency: string;
   items: IPaymentItem[];
-  stripeData?: {
-    paymentIntentId?: string;
-    paymentLinkId?: string;
-    checkoutSessionId?: string;
-    chargeId?: string;
-    lastPaymentError?: string;
-  };
+  stripeData?: StripeData;
   paidAt?: Date;
   failedAt?: Date;
   refundedAt?: Date;
+  failedReason?: string;
   metadata?: Record<string, string>;
   createdAt: Date;
   updatedAt: Date;

@@ -15,6 +15,14 @@ const productRouter = express.Router();
 // Public routes - readable by anyone
 productRouter.get("/", rateLimiter, productController.getProducts);
 
+// Admin-only route - Get low stock products (must be before /:id to avoid matching)
+productRouter.get(
+  "/low-stock",
+  isAuth,
+  isAdminRole,
+  productController.getLowStockProducts,
+);
+
 productRouter.get(
   "/:id",
   rateLimiter,

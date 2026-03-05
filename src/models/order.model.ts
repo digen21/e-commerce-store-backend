@@ -28,6 +28,9 @@ const OrderItemSchema = new mongoose.Schema({
   product: { type: mongoose.Schema.Types.ObjectId, ref: "Product" },
   price: Number,
   quantity: Number,
+  variant: { type: mongoose.Schema.Types.ObjectId, refPath: "items.variant" },
+  size: String,
+  reservedStock: { type: Number, default: 0 },
 });
 
 const OrderSchema = new mongoose.Schema<IOrder>(
@@ -55,6 +58,7 @@ const OrderSchema = new mongoose.Schema<IOrder>(
     estimatedDeliveryDate: { type: Date },
     paymentStatusTimeline: StatusTimeLineSchema,
     orderStatusTimeLine: OrderTimeLineSchema,
+    failedReason: { type: String },
   },
   { timestamps: true },
 );

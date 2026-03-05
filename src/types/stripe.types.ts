@@ -4,25 +4,38 @@ export interface StripeServiceInput extends CreatePaymentLinkInput {
   taxDescription?: string;
 }
 
+export interface StripItemMetaData {
+  productId: string;
+  variantId?: string;
+  size?: string;
+}
+
+export interface StripProductData {
+  name: string;
+  description?: string;
+  metadata?: StripItemMetaData;
+}
+
 export interface StripeLineItem {
   price_data: {
     currency: string;
-    product_data: {
-      name: string;
-      description?: string;
-    };
+    product_data: StripProductData;
     unit_amount: number;
   };
   quantity: number;
 }
 
+export interface CreatePaymentLinkItems {
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  variantId?: string;
+  size?: string;
+}
+
 export interface CreatePaymentLinkInput {
-  items: Array<{
-    productId: string;
-    productName: string;
-    quantity: number;
-    unitPrice: number;
-  }>;
+  items: CreatePaymentLinkItems[];
   orderId: string;
   userId: string;
 }

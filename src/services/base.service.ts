@@ -1,7 +1,9 @@
 import {
+  AggregateOptions,
   PaginateModel,
   PaginateOptions,
   PaginateResult,
+  PipelineStage,
   ProjectionType,
   QueryFilter,
   QueryOptions,
@@ -29,6 +31,7 @@ import {
   IUser,
   IUserDetails,
 } from "@types";
+import { SaveOptions } from "mongoose";
 
 type Where<T> = Partial<Record<keyof T, unknown>>;
 
@@ -58,9 +61,9 @@ export class BaseRepository<T> {
     return this.model.findOne(where, projection, options);
   }
 
-  create(data: Partial<T>) {
+  create(data: Partial<T>, options?: SaveOptions) {
     const doc = new this.model(data);
-    return doc.save();
+    return doc.save(options);
   }
 
   update(
@@ -93,6 +96,10 @@ export class BaseRepository<T> {
     options?: QueryOptions<T>,
   ) {
     return this.model.findById(id, projection, options);
+  }
+
+  aggregate(pipeline?: PipelineStage[], options?: AggregateOptions) {
+    return this.model.aggregate(pipeline, options);
   }
 }
 

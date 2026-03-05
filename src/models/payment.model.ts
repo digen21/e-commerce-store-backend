@@ -22,6 +22,8 @@ const StripeDataSchema = new mongoose.Schema(
     checkoutSessionId: String,
     chargeId: String,
     lastPaymentError: String,
+    invoiceUrl: { type: String, default: null },
+    receiptNumber: String,
   },
   { _id: false },
 );
@@ -60,6 +62,7 @@ const PaymentSchema = new mongoose.Schema<IPayment>(
     failedAt: { type: Date },
     refundedAt: { type: Date },
     metadata: mongoose.Schema.Types.Mixed,
+    failedReason: { type: String },
   },
   { timestamps: true },
 );
@@ -67,7 +70,6 @@ const PaymentSchema = new mongoose.Schema<IPayment>(
 // Indexes for efficient queries
 PaymentSchema.index({ orderId: 1 });
 PaymentSchema.index({ userId: 1, createdAt: -1 });
-PaymentSchema.index({ paymentIntentId: 1 });
 PaymentSchema.index({ user: 1, status: 1 }); // For pending order checks
 
 PaymentSchema.plugin(mongoosePaginate);
