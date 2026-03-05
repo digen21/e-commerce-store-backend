@@ -95,6 +95,46 @@ class StripeService {
   }
 
   /**
+   * Create a refund for a payment intent or charge
+   */
+  async createRefund(params: {
+    paymentIntentId?: string;
+    chargeId?: string;
+    amount?: number; // Optional - full refund if not specified
+    reason?: "duplicate" | "fraudulent" | "requested_by_customer";
+    metadata?: Record<string, string>;
+  }): Promise<Stripe.Refund> {
+    const refundParams: Stripe.RefundCreateParams = {
+      metadata: params.metadata || {},
+    };
+
+    if (params.paymentIntentId) {
+      refundParams.payment_intent = params.paymentIntentId;
+    } else if (params.chargeId) {
+      refundParams.charge = params.chargeId;
+    } else {
+      throw new Error("Either paymentIntentId or chargeId is required");
+    }
+
+    if (params.amount) {
+      refundParams.amount = Math.round(params.amount * 100); // Convert to cents
+    }
+
+    if (params.reason) {
+      refundParams.reason = params.reason;
+    }
+
+    return stripe.refunds.create(refundParams);
+  }
+
+  /**
+   * Retrieve a refund from Stripe
+   */
+  async getRefund(refundId: string): Promise<Stripe.Refund> {
+    return stripe.refunds.retrieve(refundId);
+  }
+
+  /**
    * Construct and verify webhook event
    */
   constructWebhookEvent(body: Buffer, signature: string): Stripe.Event {

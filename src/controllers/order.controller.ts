@@ -29,6 +29,8 @@ import {
   OrderStatus,
   PaymentMethod,
   PaymentStatus,
+  RefundStatus,
+  UserRoles,
 } from "@types";
 
 const ORDER_STATUS_META = {
@@ -678,20 +680,36 @@ class OrderController {
           session.endSession();
           return next(
             new ServerError({
-              message: "Order not found",
+              message: "Order not Ffound",
               status: httpStatus.NOT_FOUND,
             }),
           );
         }
 
-        // Check if user owns the order
-        if (order.user.toString() !== userId.toString()) {
+        // Check if user owns the order OR is an admin
+        const isAdmin = (req.user as IUser).role === UserRoles.ADMIN;
+        if (!isAdmin && order.user.toString() !== userId.toString()) {
           await session.abortTransaction();
           session.endSession();
           return next(
             new ServerError({
               message: "Unauthorized to cancel this order",
               status: httpStatus.FORBIDDEN,
+            }),
+          );
+        }
+
+        // Check if order is already cancelled
+        if (order.orderStatusTimeLine?.cancelledAt) {
+          await session.abortTransaction();
+          session.endSession();
+          return next(
+            new ServerError({
+              message: "Order is already cancelled",
+              status: httpStatus.BAD_REQUEST,
+              meta: {
+                cancelledAt: order.orderStatusTimeLine.cancelledAt,
+              },
             }),
           );
         }
@@ -722,23 +740,14 @@ class OrderController {
           );
         }
 
-        // Update order status
-        const updatedOrder = await orderService.update(
-          { _id: order._id },
-          {
-            orderStatus: OrderStatus.CANCELLED,
-            orderStatusTimeLine: {
-              ...order.orderStatusTimeLine,
-              cancelledAt: new Date(),
-            },
-          },
-        );
+        // Check if payment was successful - process refund if applicable
+        let refundProcessed = false;
+        let refundId: string | undefined;
+        const refundAmount = order.totalAmount;
 
-        // Restore product stock (batch operation)
-        // If variant was ordered, restore variant stock; otherwise restore global stock
+        // First: Restore stock immediately (regardless of payment status)
         const stockRestoreOperations = order.items.flatMap((item) => {
           if (item.variant) {
-            // Restore variant stock
             return {
               updateOne: {
                 filter: { _id: item.product, "variants._id": item.variant },
@@ -748,25 +757,122 @@ class OrderController {
                 arrayFilters: [{ "variant._id": item.variant }],
               },
             };
-          } else {
-            // Restore global stock
-            return {
-              updateOne: {
-                filter: { _id: item.product },
-                update: { $inc: { stock: item.quantity } },
-              },
-            };
           }
+          return {
+            updateOne: {
+              filter: { _id: item.product },
+              update: { $inc: { stock: item.quantity } },
+            },
+          };
         });
 
         if (stockRestoreOperations.length > 0) {
           await Product.bulkWrite(stockRestoreOperations, { session });
         }
 
+        // Second: Process refund if payment was successful
+        if (order.paymentStatus === PaymentStatus.SUCCESS) {
+          // Find payment record
+          const payment = await paymentService.findOne(
+            { order: order._id },
+            {},
+            { session },
+          );
+
+          if (payment && payment.paymentIntentId) {
+            logger.info("Processing refund for cancelled order:", {
+              orderId: order._id.toString(),
+              paymentIntentId: payment.paymentIntentId,
+              amount: refundAmount,
+            });
+
+            try {
+              // Initiate refund via Stripe
+              const refund = await stripeService.createRefund({
+                paymentIntentId: payment.paymentIntentId,
+                amount: refundAmount,
+                reason: "requested_by_customer",
+                metadata: {
+                  orderId: order._id.toString(),
+                  cancelledBy: userId.toString(),
+                  cancelReason: "Customer requested cancellation",
+                },
+              });
+
+              refundId = refund.id;
+              refundProcessed = true;
+
+              // Update payment record with refund details
+              await paymentService.update(
+                { _id: payment._id },
+                {
+                  refundStatus: RefundStatus.PROCESSING,
+                  refundedAt: new Date(),
+                  stripeData: {
+                    ...payment.stripeData,
+                    refundId: refund.id,
+                    refundStatus: RefundStatus.PENDING,
+                    refundAmount: refundAmount,
+                    refundReason: "requested_by_customer",
+                  },
+                },
+                { session },
+              );
+
+              logger.info("Refund initiated successfully:", {
+                orderId: order._id.toString(),
+                refundId: refund.id,
+                status: refund.status,
+              });
+            } catch (refundError) {
+              logger.error("Refund failed for cancelled order:", {
+                orderId: order._id.toString(),
+                paymentIntentId: payment.paymentIntentId,
+                error: refundError,
+              });
+
+              // Continue with cancellation but mark refund as failed
+              if (payment) {
+                await paymentService.update(
+                  { _id: payment._id },
+                  {
+                    refundStatus: RefundStatus.FAILED,
+                    stripeData: {
+                      ...payment.stripeData,
+                      refundFailureReason:
+                        refundError instanceof Error
+                          ? refundError.message
+                          : "Unknown refund error",
+                    },
+                  },
+                  { session },
+                );
+              }
+            }
+          }
+        }
+
+        // Update order status to CANCELLED
+        const updatedOrder = await orderService.update(
+          { _id: order._id },
+          {
+            orderStatus: OrderStatus.CANCELLED,
+            orderStatusTimeLine: {
+              ...order.orderStatusTimeLine,
+              cancelledAt: new Date(),
+            },
+            $set: {
+              "items.$[].reservedStock": 0,
+            },
+          },
+          { session },
+        );
+
         // Log analytics
         await analyticsLogger.logOrderCancelled(
           userId.toString(),
           order._id.toString(),
+          refundProcessed ? "Refund processed" : undefined,
         );
 
         await session.commitTransaction();
@@ -774,8 +880,20 @@ class OrderController {
 
         return res.status(httpStatus.OK).send({
           success: true,
-          message: "Order cancelled successfully",
-          data: updatedOrder,
+          message: refundProcessed
+            ? "Order cancelled successfully. Refund has been initiated."
+            : "Order cancelled successfully",
+          data: {
+            order: updatedOrder,
+            refund: refundProcessed
+              ? {
+                  refundId,
+                  amount: refundAmount,
+                  status: "processing",
+                  message: "Refund will be processed within 5-10 business days",
+                }
+              : undefined,
+          },
           status: httpStatus.OK,
         });
       } catch (error) {

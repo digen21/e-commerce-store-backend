@@ -22,4 +22,12 @@ paymentRouter.get(
   paymentController.getInvoice,
 );
 
+// Get refund status for an order - rate limited
+paymentRouter.get(
+  "/refunds/:orderId/status",
+  isAuth,
+  rateLimiter,
+  paymentController.getRefundStatus,
+);
+
 export default paymentRouter;

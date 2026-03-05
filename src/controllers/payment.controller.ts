@@ -4,7 +4,7 @@ import mongoose from "mongoose";
 
 import { Product } from "@models";
 import { orderService, paymentService, stripeService } from "@services";
-import { IUser, OrderStatus, PaymentStatus, StripeData } from "@types";
+import { IUser, OrderStatus, PaymentStatus, RefundStatus } from "@types";
 import { logger, ServerError } from "@utils";
 import Stripe from "stripe";
 
@@ -62,6 +62,14 @@ class PaymentController {
         await this.handlePaymentFailed(
           event.data.object as Stripe.PaymentIntent,
         );
+        break;
+
+      case "charge.refunded":
+        await this.handleChargeRefunded(event.data.object as Stripe.Charge);
+        break;
+
+      case "charge.refund.updated":
+        await this.handleRefundUpdated(event.data.object as Stripe.Refund);
         break;
     }
 
@@ -336,7 +344,8 @@ class PaymentController {
   private async fetchAndStoreInvoiceFromStripe(
     paymentId: string,
     paymentIntentId: string,
-    existingStripeData?: StripeData,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    existingStripeData?: any,
   ): Promise<{
     invoiceUrl: string;
     receiptNumber?: string;
@@ -549,6 +558,333 @@ class PaymentController {
       });
     } catch (error) {
       logger.error("Error getting invoice:", error);
+      throw error;
+    }
+  };
+
+  /**
+   * Handle charge refunded - Update payment and order status
+   */
+  private async handleChargeRefunded(charge: Stripe.Charge) {
+    const paymentIntentId =
+      typeof charge.payment_intent === "string"
+        ? charge.payment_intent
+        : charge.payment_intent?.id;
+
+    if (!paymentIntentId) {
+      logger.warn("Charge refunded but no payment intent ID found:", {
+        chargeId: charge.id,
+      });
+      return;
+    }
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const payment = await paymentService.findOne(
+        { paymentIntentId },
+        {},
+        { session },
+      );
+
+      if (!payment) {
+        await session.abortTransaction();
+        session.endSession();
+        logger.warn("Payment not found for refunded charge:", {
+          chargeId: charge.id,
+          paymentIntentId,
+        });
+        return;
+      }
+
+      // Update payment with refund details (stock will be restored when refund succeeds)
+      await paymentService.update(
+        { _id: payment._id },
+        {
+          refundStatus: RefundStatus.PROCESSING,
+          refundedAt: new Date(),
+          stripeData: {
+            ...payment.stripeData,
+            refundId: charge.refunds?.data[0]?.id,
+            refundStatus: RefundStatus.PROCESSING,
+            refundAmount: charge.amount_refunded
+              ? charge.amount_refunded / 100
+              : undefined,
+          },
+        },
+        { session },
+      );
+
+      await session.commitTransaction();
+      session.endSession();
+
+      logger.info("Charge refund initiated:", {
+        orderId: payment.order.toString(),
+        chargeId: charge.id,
+        refundAmount: charge.amount_refunded,
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+      logger.error("Error processing charge refund:", {
+        chargeId: charge.id,
+        error,
+      });
+    }
+  }
+
+  /**
+   * Handle refund status updated
+   */
+  private async handleRefundUpdated(refund: Stripe.Refund) {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      // Try to find payment by refundId in stripeData
+      let payment = await paymentService.findOne(
+        { "stripeData.refundId": refund.id },
+        {},
+        { session },
+      );
+
+      // If not found, try to find by paymentIntentId from refund
+      if (!payment) {
+        const paymentIntentId =
+          typeof refund.payment_intent === "string"
+            ? refund.payment_intent
+            : refund.payment_intent?.id;
+
+        if (paymentIntentId) {
+          payment = await paymentService.findOne(
+            { paymentIntentId },
+            {},
+            { session },
+          );
+
+          if (payment) {
+            // Update the payment with refundId for future lookups
+            await paymentService.update(
+              { _id: payment._id },
+              {
+                stripeData: {
+                  ...payment.stripeData,
+                  refundId: refund.id,
+                },
+              },
+              { session },
+            );
+            logger.info(
+              "Found payment by paymentIntentId and stored refundId:",
+              {
+                refundId: refund.id,
+                paymentIntentId,
+              },
+            );
+          }
+        }
+      }
+
+      if (!payment) {
+        await session.abortTransaction();
+        session.endSession();
+        logger.warn("Payment not found for updated refund:", {
+          refundId: refund.id,
+          paymentIntentId:
+            typeof refund.payment_intent === "string"
+              ? refund.payment_intent
+              : refund.payment_intent?.id,
+        });
+        return;
+      }
+
+      let refundStatus: string;
+      if (refund.status === "succeeded") {
+        refundStatus = RefundStatus.SUCCEEDED;
+      } else if (refund.status === "failed") {
+        refundStatus = RefundStatus.FAILED;
+      } else if (refund.status === "canceled") {
+        refundStatus = RefundStatus.CANCELLED;
+      } else {
+        refundStatus = RefundStatus.PROCESSING;
+      }
+
+      await paymentService.update(
+        { _id: payment._id },
+        {
+          refundStatus,
+          refundedAt:
+            refundStatus === RefundStatus.PROCESSING
+              ? new Date()
+              : payment.refundedAt,
+          stripeData: {
+            ...payment.stripeData,
+            refundStatus,
+            refundFailureReason:
+              refundStatus === RefundStatus.FAILED
+                ? refund.failure_reason || "Unknown failure"
+                : payment.stripeData?.refundFailureReason,
+          },
+        },
+        { session },
+      );
+
+      // When refund succeeds, update order status (stock already restored in cancelOrder)
+      if (refundStatus === RefundStatus.SUCCEEDED) {
+        const order = await orderService.findById(
+          payment.order.toString(),
+          {},
+          { session },
+        );
+
+        if (order) {
+          // Update order status to REFUNDED (stock already restored)
+          await orderService.update(
+            { _id: order._id },
+            {
+              orderStatus: OrderStatus.CANCELLED,
+              paymentStatus: PaymentStatus.REFUNDED,
+            },
+            { session },
+          );
+
+          logger.info("Refund succeeded:", {
+            refundId: refund.id,
+            orderId: order._id.toString(),
+          });
+        }
+      } else if (refundStatus === RefundStatus.FAILED) {
+        // Refund failed - update order with failure reason
+        const order = await orderService.findById(
+          payment.order.toString(),
+          {},
+          { session },
+        );
+
+        if (order) {
+          await orderService.update(
+            { _id: order._id },
+            {
+              failedReason: `Refund failed: ${refund.failure_reason || "Unknown reason"}`,
+            },
+            { session },
+          );
+
+          logger.warn("Refund failed:", {
+            refundId: refund.id,
+            orderId: order._id.toString(),
+            reason: refund.failure_reason,
+          });
+        }
+      }
+
+      await session.commitTransaction();
+      session.endSession();
+
+      logger.info("Refund status updated:", {
+        refundId: refund.id,
+        orderId: payment.order.toString(),
+        status: refundStatus,
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+      logger.error("Error updating refund status:", {
+        refundId: refund.id,
+        error,
+      });
+    }
+  }
+
+  /**
+   * Get refund status for an order
+   */
+  getRefundStatus = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { orderId } = req.params as { orderId: string };
+      const userId = (req.user as IUser)._id;
+
+      const order = await orderService.findById(orderId);
+
+      if (!order) {
+        return next(
+          new ServerError({
+            message: "Order not found",
+            status: httpStatus.NOT_FOUND,
+          }),
+        );
+      }
+
+      if (order.user.toString() !== userId.toString()) {
+        return next(
+          new ServerError({
+            message: "Unauthorized to view this refund status",
+            status: httpStatus.FORBIDDEN,
+          }),
+        );
+      }
+
+      const payment = await paymentService.findOne({ order: orderId });
+
+      if (!payment) {
+        return next(
+          new ServerError({
+            message: "Payment record not found",
+            status: httpStatus.NOT_FOUND,
+          }),
+        );
+      }
+
+      if (!payment.stripeData?.refundId) {
+        return next(
+          new ServerError({
+            message: "No refund found for this order",
+            status: httpStatus.NOT_FOUND,
+          }),
+        );
+      }
+
+      let stripeRefundStatus: Stripe.Refund | null = null;
+      try {
+        stripeRefundStatus = await stripeService.getRefund(
+          payment.stripeData.refundId,
+        );
+      } catch (error) {
+        logger.warn("Failed to fetch refund from Stripe:", {
+          refundId: payment.stripeData.refundId,
+          error,
+        });
+      }
+
+      const refundData = {
+        refundId: payment.stripeData.refundId,
+        amount: payment.stripeData.refundAmount || payment.amount,
+        status: stripeRefundStatus?.status || payment.refundStatus || "unknown",
+        reason: payment.stripeData.refundReason,
+        failureReason:
+          stripeRefundStatus?.failure_reason ||
+          payment.stripeData.refundFailureReason,
+        createdAt: stripeRefundStatus?.created
+          ? new Date(stripeRefundStatus.created * 1000)
+          : payment.refundedAt,
+      };
+
+      return res.status(httpStatus.OK).send({
+        success: true,
+        message: "Refund status retrieved successfully",
+        data: {
+          order: {
+            _id: order._id,
+            orderStatus: order.orderStatus,
+            paymentStatus: order.paymentStatus,
+          },
+          refund: refundData,
+        },
+        status: httpStatus.OK,
+      });
+    } catch (error) {
+      logger.error("Error getting refund status:", error);
       throw error;
     }
   };

@@ -34,6 +34,13 @@ export interface IPaymentItem {
   totalPrice: number;
 }
 
+export enum RefundStatus {
+  PENDING = "PENDING",
+  SUCCEEDED = "SUCCEEDED",
+  PROCESSING = "PROCESSING",
+  FAILED = "FAILED",
+  CANCELLED = "CANCELLED",
+}
 export interface StripeData {
   paymentIntentId?: string;
   paymentLinkId?: string;
@@ -42,6 +49,11 @@ export interface StripeData {
   lastPaymentError?: string;
   invoiceUrl?: string | null;
   receiptNumber?: string;
+  refundId?: string;
+  refundStatus?: RefundStatus;
+  refundAmount?: number;
+  refundReason?: string;
+  refundFailureReason?: string;
 }
 
 export interface IPayment {
@@ -60,6 +72,7 @@ export interface IPayment {
   failedAt?: Date;
   refundedAt?: Date;
   failedReason?: string;
+  refundStatus?: RefundStatus;
   metadata?: Record<string, string>;
   createdAt: Date;
   updatedAt: Date;

@@ -2,7 +2,11 @@ import mongoose, { PaginateModel } from "mongoose";
 import mongoosePaginate from "mongoose-paginate-v2";
 
 import { IPayment } from "@types";
-import { PaymentMethod, PaymentStatus } from "../types/payment.types";
+import {
+  PaymentMethod,
+  PaymentStatus,
+  RefundStatus,
+} from "../types/payment.types";
 
 const PaymentItemSchema = new mongoose.Schema(
   {
@@ -24,6 +28,14 @@ const StripeDataSchema = new mongoose.Schema(
     lastPaymentError: String,
     invoiceUrl: { type: String, default: null },
     receiptNumber: String,
+    refundId: String,
+    refundStatus: {
+      type: String,
+      enum: RefundStatus,
+    },
+    refundAmount: Number,
+    refundReason: String,
+    refundFailureReason: String,
   },
   { _id: false },
 );
@@ -61,6 +73,11 @@ const PaymentSchema = new mongoose.Schema<IPayment>(
     paidAt: { type: Date, index: true },
     failedAt: { type: Date },
     refundedAt: { type: Date },
+    refundStatus: {
+      type: String,
+      enum: RefundStatus,
+      default: RefundStatus.PENDING,
+    },
     metadata: mongoose.Schema.Types.Mixed,
     failedReason: { type: String },
   },
