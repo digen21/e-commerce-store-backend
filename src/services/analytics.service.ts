@@ -148,19 +148,12 @@ class AnalyticsLogger {
       };
     }
 
-    // Aggregate orders with successful payment
+    // Aggregate fulfilled orders with successful payment
     const aggregation = await Order.aggregate([
       {
         $match: {
           paymentStatus: PaymentStatus.SUCCESS,
-          orderStatus: {
-            $in: [
-              OrderStatus.ACCEPTED,
-              OrderStatus.CONFIRMED,
-              OrderStatus.SHIPPING,
-              OrderStatus.FULFILLED,
-            ],
-          },
+          orderStatus: OrderStatus.FULFILLED,
           createdAt: { $gte: startDate },
         },
       },
@@ -288,26 +281,20 @@ class AnalyticsLogger {
     const previousDate = new Date(now);
     previousDate.setDate(previousDate.getDate() - 30); // Compare with 30 days ago
 
-    // Get current period stats
+    // Get current period stats (last 30 days)
     const currentOrdersAgg = await Order.aggregate([
       {
         $match: {
           createdAt: { $gte: previousDate },
+          paymentStatus: PaymentStatus.SUCCESS,
+          orderStatus: OrderStatus.FULFILLED,
         },
       },
       {
         $group: {
           _id: null,
           totalOrders: { $sum: 1 },
-          totalRevenue: {
-            $sum: {
-              $cond: [
-                { $eq: ["$paymentStatus", PaymentStatus.SUCCESS] },
-                "$totalAmount",
-                0,
-              ],
-            },
-          },
+          totalRevenue: { $sum: "$totalAmount" },
         },
       },
     ]);
@@ -325,21 +312,15 @@ class AnalyticsLogger {
             $gte: new Date(previousDate.getTime() - 30 * 24 * 60 * 60 * 1000),
             $lt: previousDate,
           },
+          paymentStatus: PaymentStatus.SUCCESS,
+          orderStatus: OrderStatus.FULFILLED,
         },
       },
       {
         $group: {
           _id: null,
           totalOrders: { $sum: 1 },
-          totalRevenue: {
-            $sum: {
-              $cond: [
-                { $eq: ["$paymentStatus", PaymentStatus.SUCCESS] },
-                "$totalAmount",
-                0,
-              ],
-            },
-          },
+          totalRevenue: { $sum: "$totalAmount" },
         },
       },
     ]);
@@ -355,11 +336,12 @@ class AnalyticsLogger {
     // Get total orders (all time)
     const allTimeOrders = await Order.countDocuments();
 
-    // Get all time revenue
+    // Get all time revenue (only FULFILLED orders)
     const allTimeRevenueAgg = await Order.aggregate([
       {
         $match: {
           paymentStatus: PaymentStatus.SUCCESS,
+          orderStatus: OrderStatus.FULFILLED,
         },
       },
       {
