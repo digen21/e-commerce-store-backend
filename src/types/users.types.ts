@@ -21,6 +21,8 @@ export interface IUser {
   isVerified: boolean;
 }
 
+export type UserWithOutPassword = Omit<IUser, "password">;
+
 export interface IAddress {
   _id: Types.ObjectId | string;
   fullName: string;
