@@ -1,4 +1,3 @@
-import { omitPassword } from "@utils";
 import { NextFunction, Request, Response } from "express";
 import httpStatus from "http-status";
 import passport from "passport";
@@ -18,7 +17,7 @@ const isAuth = (req: Request, res: Response, next: NextFunction) => {
           status: httpStatus.UNAUTHORIZED,
         });
 
-      req.user = omitPassword(user);
+      req.user = user;
       next();
     },
   )(req, res, next);

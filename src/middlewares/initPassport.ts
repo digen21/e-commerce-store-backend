@@ -48,7 +48,7 @@ export default (app: Express) => {
           }
 
           const userId = payload?.userId;
-          const user = await userService.findById(userId);
+          const user = await userService.findById(userId, { password: 0 });
 
           return done(null, user || false);
         },
